@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace WebApi.Migrations
 {
-    public partial class CreateServers : Migration
+    public partial class InitDatabase : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {

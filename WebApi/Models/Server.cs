@@ -11,6 +11,8 @@ namespace WebApi.Models
         public string Address { get; set; }
         public int Port { get; set; }
         [System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute]
+        public int GetStatusFailCount { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute]
         public ServerStatus LatestServerStatus { get; set; }
         [System.ComponentModel.DataAnnotations.Schema.NotMappedAttribute]
         public DateTime LastQueryTime { get; set; }

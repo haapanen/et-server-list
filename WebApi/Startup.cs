@@ -38,7 +38,12 @@ namespace WebApi
             // Add framework services.
             services.AddApplicationInsightsTelemetry(Configuration);
 
-            services.AddSingleton<IServerRepository, ServerRepository>();
+            services.AddSingleton<IServerRepository, ServerRepository>(repository => new ServerRepository(new ServerRepositoryOptions
+            {
+                FailedGetStatusLimit = int.Parse(Configuration["FailedGetStatusLimit"]),
+                QueryInterval = TimeSpan.FromSeconds(int.Parse(Configuration["QueryInterval"])),
+                GetStatusTimeout = TimeSpan.FromSeconds(int.Parse(Configuration["GetStatusTimeout"]))
+            }));
 
             services.AddMvc();
         }

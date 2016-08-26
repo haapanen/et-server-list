@@ -5,11 +5,28 @@ using System.Linq;
 using System.Runtime.InteropServices.ComTypes;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
 using WebApi.Database;
 using WebApi.Utilities;
 
 namespace WebApi.Models.Repositories
 {
+    public class ServerRepositoryOptions
+    {
+        /// <summary>
+        /// How many times getstatus can fail before we remove the server
+        /// </summary>
+        public int FailedGetStatusLimit { get; set; }
+        /// <summary>
+        /// How long getstatus can last before we time it out
+        /// </summary>
+        public TimeSpan GetStatusTimeout { get; set; }
+        /// <summary>
+        /// How often do we query for each server status?
+        /// </summary>
+        public TimeSpan QueryInterval { get; set; }
+    }
+
     public class ServerRepository : IServerRepository
     {
         /// <summary>
@@ -17,8 +34,14 @@ namespace WebApi.Models.Repositories
         /// </summary>
         private ConcurrentBag<Server> _servers;
 
-        public ServerRepository()
+        /// <summary>
+        /// Repository options
+        /// </summary>
+        private ServerRepositoryOptions _options;
+
+        public ServerRepository(ServerRepositoryOptions options)
         {
+            _options = options;
             _servers = new ConcurrentBag<Server>();
             using (var db = new ServerContext())
             {
@@ -28,7 +51,8 @@ namespace WebApi.Models.Repositories
                     Port = s.Port,
                     Address = s.Address,
                     LastQueryTime = DateTime.MinValue,
-                    LatestServerStatus = null
+                    LatestServerStatus = null,
+                    GetStatusFailCount = 0
                 }));
             }
         }
@@ -47,32 +71,77 @@ namespace WebApi.Models.Repositories
                 return null;
             }
 
-            var match = _servers.Where(s => s.Address == address && s.Port == port);
-            if (!match.Any())
+            var match = _servers.FirstOrDefault(s => s.Address == address && s.Port == port);
+            if (match == null)
             {
-                var newServer = await GetNewServer(address, port, TimeSpan.FromSeconds(1));
-                if (newServer != null)
-                {
-                    _servers.Add(newServer);
-                    using (var db = new ServerContext())
-                    {   
-                        db.Servers.Add(newServer);
-                        db.SaveChanges();
-                    }
+                var newServer = await GetNewServer(address, port, _options.GetStatusTimeout);
+                // don't add the server to database if we can't reach it
+                if (newServer == null) return null;
+                _servers.Add(newServer);
+                using (var db = new ServerContext())
+                {   
+                    db.Servers.Add(newServer);
+                    await db.SaveChangesAsync();
                 }
                 return newServer;
             }
 
-            var server = match.First();
-            if (DateTime.UtcNow - server.LastQueryTime < TimeSpan.FromSeconds(30))
+            var server = match;
+            if (DateTime.UtcNow - server.LastQueryTime < _options.QueryInterval)
             {
                 return server;
             }
 
-            server.LatestServerStatus =
-                await new WolfClient(new WolfClientOptions {Address = address, Port = port}).GetStatus();
-            server.LastQueryTime = DateTime.UtcNow;
+            await UpdateServerStatus(server);
+            // Remove server getstatus has failed too many times
+            await CheckFailCount(server);
+            
             return server;
+        }
+
+        /// <summary>
+        /// Checks if the server getstatus query has failed too many times,
+        /// if yes, deletes server
+        /// </summary>
+        /// <param name="server"></param>
+        /// <returns></returns>
+        private async Task CheckFailCount(Server server)
+        {
+            if (server.GetStatusFailCount > _options.FailedGetStatusLimit)
+            {
+                _servers = new ConcurrentBag<Server>(_servers.Where(s => s.Id != server.Id));
+                using (var db = new ServerContext())
+                {
+                    db.Servers.Remove(server);
+                    await db.SaveChangesAsync();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Updates the server's status.
+        /// Deletes the server if no status could be received in a certain amount of tries
+        /// </summary>
+        /// <param name="server"></param>
+        /// <returns></returns>
+        private async Task UpdateServerStatus(Server server)
+        {
+            var ctSource = new CancellationTokenSource();
+
+            var task = new WolfClient(new WolfClientOptions { Address = server.Address, Port = server.Port }).GetStatus();
+            var completed = await Task.WhenAny(task, Task.Delay(_options.GetStatusTimeout, ctSource.Token));
+            if (completed == task)
+            {
+                server.LatestServerStatus = task.Result;
+                server.LastQueryTime = DateTime.UtcNow;
+                server.GetStatusFailCount = 0;
+                ctSource.Cancel();
+            }
+            else
+            {
+                server.GetStatusFailCount++;
+                return;
+            }
         }
 
         /// <summary>
@@ -81,13 +150,13 @@ namespace WebApi.Models.Repositories
         /// <returns></returns>
         public async Task<List<Server>> GetAll()
         {
+            var tasks = new List<Task>();
             var servers = _servers.Select(async (s) =>
             {
                 if (DateTime.UtcNow - s.LastQueryTime > TimeSpan.FromSeconds(30))
                 {
-                    s.LatestServerStatus =
-                        await new WolfClient(new WolfClientOptions {Address = s.Address, Port = s.Port}).GetStatus();
-                    s.LastQueryTime = DateTime.UtcNow;
+                    await UpdateServerStatus(s);
+                    await CheckFailCount(s);
                 }
                 return s;
             });
@@ -126,7 +195,8 @@ namespace WebApi.Models.Repositories
                 Address = address,
                 Port = port,
                 LastQueryTime = DateTime.UtcNow,
-                LatestServerStatus = task.Result
+                LatestServerStatus = task.Result,
+                GetStatusFailCount = 0
             };
         }
     }

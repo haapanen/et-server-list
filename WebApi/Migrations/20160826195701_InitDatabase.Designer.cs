@@ -8,8 +8,8 @@ using WebApi.Database;
 namespace WebApi.Migrations
 {
     [DbContext(typeof(ServerContext))]
-    [Migration("20160825180015_CreateServers")]
-    partial class CreateServers
+    [Migration("20160826195701_InitDatabase")]
+    partial class InitDatabase
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
